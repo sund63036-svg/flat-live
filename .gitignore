@@ -1,0 +1,27 @@
+# 本地/临时文件
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+
+# 本地私有素材：银紫原始 PNG 放这里，仅供本地录制宣传视频，不随仓库提交。
+_private/
+
+# 内部物料：混剪素材决策与中文发布操作清单，只对大圣本人有用，不随公开仓库发布。
+release-kit/MONTAGE_GUIDE.md
+release-kit/START_HERE.md
+
+# 截图与凭证类：防止误把云服务器控制台、后台、配置文件截图提交上去。
+截屏*.png
+截屏*.jpg
+Screen Shot*.png
+*ECS*.png
+*.pem
+*.key
+.env
+.env.*
+
+# 说明：
+# - 技术包内不含任何银紫原始素材，demo 页自动回退到程序化示例。
+# - 银紫形象仅出现在宣传视频/封面（release-kit/videos/），经作者授权展示。
+# - MONTAGE_GUIDE / START_HERE 是本地内部文档，避免把混剪与操作决策暴露给甲方圈。

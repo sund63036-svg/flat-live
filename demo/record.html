@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>flat-live · recorder</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f0d16;overflow:hidden}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{width:100%;height:100%;display:block}
+  #hud{position:fixed;left:16px;top:14px;color:#b9aee0;font:13px/1.5 -apple-system,sans-serif;pointer-events:none;opacity:.85}
+  #cap{position:fixed;left:0;right:0;bottom:8%;text-align:center;color:#fff;font:600 clamp(20px,4vw,44px)/1.3 -apple-system,sans-serif;
+       text-shadow:0 3px 24px rgba(0,0,0,.7);pointer-events:none;opacity:0;transition:opacity .5s}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="char"></canvas></div>
+<div id="hud">flat-live · recording</div>
+<div id="cap"></div>
+<script type="module">
+  import { Driver } from '../src/driver.js';
+  import { Renderer } from '../src/renderer.js';
+  import { createSampleAssets } from '../src/sample-art.js';
+
+  const params = new URLSearchParams(location.search);
+  const USE_REAL = params.get('asset') === 'real';     // real=银紫(受限) / procedural=原创(可公开)
+  const DURATION = Number(params.get('dur') || 14);    // 录制时长（秒）
+  const OUT = params.get('out') || 'flat-live-demo';
+
+  const cap = document.getElementById('cap');
+  const hud = document.getElementById('hud');
+  const canvas = document.getElementById('char');
+  const driver = new Driver();
+  // 录制演示：上半身特写 + 适度加大动作幅度，便于短视频看清；引擎默认值不变。
+  const renderer = new Renderer({
+    zoom: params.get('zoom') !== '0',   // 默认特写；?zoom=0 切回全身
+    headRollMax: 0.16,       // 约 9°（默认 4.5°）
+    shoulderRollMax: 0.014,
+    hairLag: 0.42,
+    eyeLookX: 10.0,
+    eyeLookY: 5.0,
+  });
+
+  // ---------- 原创背景音乐（Web Audio 程序化合成，无版权） ----------
+  let audioCtx, master, musicTimer = [];
+  function setupAudio() {
+    audioCtx = new AudioContext();
+    master = audioCtx.createGain();
+    master.gain.value = 0.0;
+    master.connect(audioCtx.destination);
+    // 淡入
+    master.gain.setValueAtTime(0, audioCtx.currentTime);
+    master.gain.linearRampToValueAtTime(0.22, audioCtx.currentTime + 1.2);
+  }
+  function note(freq, start, dur, type='sine', vol=0.18) {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, start);
+    g.gain.linearRampToValueAtTime(vol, start + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    o.connect(g); g.connect(master);
+    o.start(start); o.stop(start + dur + 0.05);
+  }
+  // 一段柔和的 8 小节循环：C大调分解和弦 + 高音点缀
+  function scheduleMusic(t0) {
+    const chords = [
+      [261.63, 329.63, 392.00], // C
+      [220.00, 261.63, 329.63], // Am
+      [174.61, 220.00, 261.63], // F
+      [196.00, 246.94, 293.66], // G
+    ];
+    const bar = 1.6;
+    for (let i = 0; i < 20; i++) {
+      const t = t0 + i * bar;
+      const ch = chords[i % chords.length];
+      ch.forEach((f, k) => note(f, t + k * 0.16, bar * 0.95, 'sine', 0.13));
+      note(ch[0] / 2, t, bar * 0.9, 'triangle', 0.09);           // 低音垫
+      if (i % 2 === 0) note(ch[2] * 2, t + bar * 0.5, bar * 0.4, 'sine', 0.05); // 点缀
+    }
+  }
+
+  // ---------- 动作编排（按时间轴触发） ----------
+  const beats = [
+    { t: 0.6,  fn: () => { cap.textContent = 'Breathe · idle'; cap.style.opacity = 1; } },
+    { t: 2.0,  fn: () => driver.blink() },
+    { t: 2.9,  fn: () => { cap.style.opacity = 0; } },
+    { t: 3.1,  fn: () => { cap.textContent = 'Gaze follows'; cap.style.opacity = 1; driver.look(0.7, 0.2); } },
+    { t: 4.8,  fn: () => driver.look(-0.5, -0.15) },
+    { t: 6.2,  fn: () => { cap.style.opacity = 0; } },
+    { t: 6.5,  fn: () => { cap.textContent = 'Head tilt'; cap.style.opacity = 1; driver.tilt(); } },
+    { t: 9.4,  fn: () => { cap.style.opacity = 0; } },
+    { t: 9.7,  fn: () => { cap.textContent = 'Nod'; cap.style.opacity = 1; driver.nod(); } },
+    { t: 10.7, fn: () => { cap.style.opacity = 0; } },
+    { t: 11.0, fn: () => { cap.textContent = 'Lip-sync · smile'; cap.style.opacity = 1; driver.setExpression('smile', 1); driver.speak(true); } },
+    { t: 13.2, fn: () => { driver.speak(false); driver.feedMouth(0); } },
+  ];
+  let beatIdx = 0;
+
+  async function loadAssets() {
+    if (USE_REAL) {
+      const files = ['../_private/assets/portrait.png', '../_private/assets/blink.png', '../_private/assets/mask.png'];
+      const res = await Promise.all(files.map(u => fetch(u, { cache: 'no-cache' })));
+      const blobs = await Promise.all(res.map(r => r.blob()));
+      return { portrait: blobs[0], blink: blobs[1], mask: blobs[2] };
+    }
+    return await createSampleAssets();
+  }
+
+  // ---------- 录制 ----------
+  async function start() {
+    renderer.attach(canvas);
+    await renderer.load(await loadAssets());
+    setupAudio();
+    scheduleMusic(audioCtx.currentTime + 0.15);
+
+    // 混流：canvas 画面 + 音乐
+    const canvasStream = canvas.captureStream(30);
+    const dest = audioCtx.createMediaStreamDestination();
+    master.connect(dest);
+    const mixed = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...dest.stream.getAudioTracks(),
+    ]);
+    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus' : 'video/webm';
+    const rec = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const ab = await blob.arrayBuffer();
+      window.__REC_DONE__ = { size: blob.size, data: Array.from(new Uint8Array(ab)) };
+      hud.textContent = 'RECORDING COMPLETE';
+    };
+
+    // 先渲染一帧，确保 canvas 有内容
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(devicePixelRatio || 1, 1.5);
+    renderer.render(canvas, driver.update(0, 0), Math.round(rect.width*dpr), Math.round(rect.height*dpr), 0);
+    rec.start(100);
+
+    const t0 = performance.now();
+    let last = t0;
+    function frame(now) {
+      const dt = Math.min((now - last)/1000, 0.07); last = now;
+      const el = (now - t0)/1000;
+      while (beatIdx < beats.length && el >= beats[beatIdx].t) beats[beatIdx++].fn();
+      if (driver.speaking) driver.feedMouth(0.35 + 0.45*Math.abs(Math.sin(el*11)));
+      const pose = driver.update(dt, el);
+      const r = canvas.getBoundingClientRect();
+      renderer.render(canvas, pose, Math.round(r.width*dpr), Math.round(r.height*dpr), dt);
+      if (el < DURATION) requestAnimationFrame(frame);
+      else { rec.stop(); window.__REC_DURATION__ = el; }
+    }
+    requestAnimationFrame(frame);
+    window.__REC_READY__ = true;
+  }
+  window.__REC_OUT__ = OUT;
+  start().catch(e => { hud.textContent = 'ERROR: ' + e.message; window.__REC_ERROR__ = e.message; });
+</script>
+</body>
+</html>

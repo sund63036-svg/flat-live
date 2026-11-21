@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>flat-live · 平面立绘驱动引擎</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:#14121b;color:#ece8f5;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;align-items:center;justify-content:center;padding:20px}
+  .wrap{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;justify-content:center;max-width:960px;width:100%}
+  .stage{position:relative;width:min(420px,92vw);height:min(660px,82vh);border-radius:18px;overflow:hidden;background:radial-gradient(120% 90% at 50% 20%,#2a2540 0%,#17141f 70%)}
+  #char{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .hint{position:absolute;left:0;right:0;bottom:14px;text-align:center;font-size:12px;color:#a89fc4;pointer-events:none}
+  .panel{width:min(300px,92vw);display:flex;flex-direction:column;gap:14px}
+  h1{font-size:19px;margin:0 0 2px;font-weight:600}
+  .sub{color:#a89fc4;font-size:12px;margin:0 0 6px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  button{appearance:none;border:1px solid #3a3450;background:#211d2e;color:#ece8f5;border-radius:10px;padding:10px 8px;font-size:13px;cursor:pointer;transition:.15s}
+  button:hover{background:#2c2740;border-color:#5a4f7d}
+  button:active{transform:translateY(1px)}
+  .wide{grid-column:1/-1}
+  .toggle{border-color:#4a3f6b}
+  .on{background:#5b4f8a;border-color:#7d6cb8}
+  .note{font-size:11px;color:#8b83a6;border-top:1px solid #2c2740;padding-top:10px}
+  code{background:#211d2e;padding:1px 5px;border-radius:4px;color:#c9b8ff}
+  #status{font-size:12px;color:#8fd6b4;min-height:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <canvas id="char"></canvas>
+    <div class="hint">点角色/按钮试试 · 纯前端 · 零依赖</div>
+  </div>
+  <div class="panel">
+    <div>
+      <h1>flat-live</h1>
+      <p class="sub">平面立绘驱动引擎 · 演示</p>
+    </div>
+    <div id="status">加载中…</div>
+    <div class="grid">
+      <button id="b-blink">眨眼</button>
+      <button id="b-look">转移视线</button>
+      <button id="b-nod">点头</button>
+      <button id="b-tilt">歪头</button>
+      <button id="b-smile" class="toggle">微笑</button>
+      <button id="b-shy" class="toggle">害羞</button>
+      <button id="b-speak" class="toggle wide">模拟说话</button>
+      <button id="b-reset" class="wide">全部复位</button>
+    </div>
+    <div class="note">
+      本页使用 <code>sample-art.js</code> 程序化生成的原创示例形象，无版权限制、可自由使用。
+      带精致形象的宣传视频见 <code>release-kit/videos/</code>（经作者授权展示）。
+      驱动逻辑在 <code>driver.js</code>，渲染在 <code>renderer.js</code>，形变在 <code>shader.js</code>。
+    </div>
+  </div>
+</div>
+<script type="module">
+  import { Driver } from './src/driver.js';
+  import { Renderer } from './src/renderer.js';
+  import { createSampleAssets } from './src/sample-art.js';
+
+  const canvas = document.getElementById('char');
+  const status = document.getElementById('status');
+  const driver = new Driver();
+  const renderer = new Renderer();
+
+  let speaking = false, talkTimer = 0;
+
+  function bind(id, fn){ document.getElementById(id).addEventListener('click', fn); }
+  bind('b-blink', () => driver.blink());
+  bind('b-look', () => { const x = Math.random()*1.6-0.8, y = Math.random()*1.2-0.6; driver.look(x,y); });
+  bind('b-nod', () => driver.nod());
+  bind('b-tilt', () => driver.tilt());
+  bind('b-smile', (e) => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on',on); driver.setExpression('smile', on?1:0); });
+  bind('b-shy', (e) => { const on = !e.currentTarget.classList.contains('on'); e.currentTarget.classList.toggle('on',on); driver.setExpression('shy', on?1:0); });
+  bind('b-speak', (e) => {
+    speaking = !speaking;
+    e.currentTarget.classList.toggle('on', speaking);
+    driver.speak(speaking);
+    if (!speaking) driver.feedMouth(0);
+  });
+  bind('b-reset', () => {
+    driver.reset(); speaking = false;
+    ['b-smile','b-shy','b-speak'].forEach(id=>document.getElementById(id).classList.remove('on'));
+    driver.look(0,0);
+  });
+  canvas.addEventListener('click', () => driver.blink());
+
+  // 技术包默认用程序化示例（无版权、无外部素材依赖）。
+  // 本地若放入私有素材（_private/assets/），可用 ?asset=real 覆盖来预览银紫。
+  async function loadAssets() {
+    const useReal = new URLSearchParams(location.search).get('asset') === 'real';
+    if (useReal) {
+      try {
+        const names = ['portrait', 'blink', 'mask'];
+        const files = ['_private/assets/portrait.png', '_private/assets/blink.png', '_private/assets/mask.png'];
+        const res = await Promise.all(files.map((u) => fetch(u, { cache: 'no-cache' })));
+        if (res.some((r) => !r.ok)) throw new Error('素材缺失');
+        const blobs = await Promise.all(res.map((r) => r.blob()));
+        return { assets: Object.fromEntries(names.map((n, i) => [n, blobs[i]])), source: '本地私有形象（不随仓库分发）' };
+      } catch (e) { /* 落到程序化示例 */ }
+    }
+    return { assets: await createSampleAssets(), source: '程序化示例形象（无版权）' };
+  }
+
+  try {
+    renderer.attach(canvas);
+    const { assets, source } = await loadAssets();
+    await renderer.load(assets);
+    status.textContent = '运行正常 · ' + source;
+
+    let last = performance.now();
+    function frame(now){
+      const dt = Math.min((now - last)/1000, 0.07); last = now;
+      if (speaking) {
+        talkTimer += dt;
+        // 模拟音量为口型包络；真实用法接 Web Audio 的分析结果。
+        driver.feedMouth(0.35 + 0.45*Math.abs(Math.sin(talkTimer*11)) );
+      }
+      const pose = driver.update(dt, now/1000);
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(devicePixelRatio||1, 1.6);
+      renderer.render(canvas, pose, Math.round(rect.width*dpr), Math.round(rect.height*dpr), dt);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+    document.addEventListener('visibilitychange', () => { if (document.hidden){ driver.reset(); } last = performance.now(); });
+  } catch (err) {
+    status.textContent = '加载失败：' + err.message;
+    console.error(err);
+  }
+</script>
+</body>
+</html>
